@@ -19,7 +19,7 @@ class NLPUtil(object):
                   '#', '"', "'", '^', ':', '/', '%', '=', ';', u'；', '@',
                   '{', '}', u'」', u'「', u'．', u'—', u'－', u'『', u'』',
                   u'□', u'【', u'】', u'◆', u'（', u'）', u'·', u'`', u'·',
-                  u'\t', u'\\n', u'']
+                  u'\t', u'\\n', u'|']
     stopwords = set(_stopwords)
     jieba.load_userdict(SGPY_DICTIONARY)
     jieba.load_userdict(CHINESE_NAME_CORPUS)
