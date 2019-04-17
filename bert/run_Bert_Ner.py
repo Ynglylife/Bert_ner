@@ -67,11 +67,11 @@ flags.DEFINE_bool(
     "do_predict", False,
     "Whether to run the model in inference mode on the test set.")
 
-flags.DEFINE_integer("train_batch_size", 2, "Total batch size for training.")
+flags.DEFINE_integer("train_batch_size", 4, "Total batch size for training.")
 
-flags.DEFINE_integer("eval_batch_size", 8, "Total batch size for eval.")
+flags.DEFINE_integer("eval_batch_size", 4, "Total batch size for eval.")
 
-flags.DEFINE_integer("predict_batch_size", 8, "Total batch size for predict.")
+flags.DEFINE_integer("predict_batch_size", 4, "Total batch size for predict.")
 
 flags.DEFINE_float("learning_rate", 5e-5, "The initial learning rate for Adam.")
 
@@ -196,7 +196,8 @@ class DataProcessor(object):
 class NerProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         return self._create_examples(
-            self._read_json(os.path.join(data_dir, 'train.json')), "sub_train"
+            self._read_json(os.path.join(data_dir, 'train.json')), "train"
+           #self._read_json("/mnt/souhu/data/coreEntityEmotion_sub_train_bert.json"), "sub_train"
         )
 
     def get_dev_examples(self, data_dir):
@@ -216,8 +217,8 @@ class NerProcessor(DataProcessor):
         examples = []
         def getExample(guid, label):
             for i, sub_label in enumerate(label):
-                text = " ".join(str(j[0]) for j in sub_label)
-                label = ' '.join(str(j[1]) for j in sub_label)
+                text = sub_label[0]
+                label = sub_label[1]
                 examples.append(InputExample(guid="%s-%d" % (guid, i), text_a=text, text_b=None, label=label))
         data.progress_apply(lambda row: getExample(row['newsId'], row['label']), axis=1)
         return examples
@@ -226,7 +227,7 @@ class NerProcessor(DataProcessor):
 def convert_single_example(ex_index, example, label_list, max_seq_length,
                            tokenizer):
     """Converts a single `InputExample` into a single `InputFeatures`."""
-    list_label = example.label.split(" ")
+    list_label = example.label
     if isinstance(example, PaddingInputExample):
         return InputFeatures(
             input_ids=[0] * max_seq_length,
@@ -238,11 +239,8 @@ def convert_single_example(ex_index, example, label_list, max_seq_length,
     label_map = {}
     for (i, label) in enumerate(label_list):
         label_map[label] = i
-    tokens_a = tokenizer.tokenize(example.text_a)
-    min_legth = min(len(list_label), len(tokens_a))
-    list_label = list_label[0:min_legth]
-    tokens_a = tokens_a[0:min_legth]
-    assert len(list_label) == len(tokens_a)
+    tokens_a = example.text_a
+    assert len(tokens_a) == len(list_label)
     tokens_b = None
     if example.text_b:
         tokens_b = tokenizer.tokenize(example.text_b)
@@ -284,7 +282,7 @@ def convert_single_example(ex_index, example, label_list, max_seq_length,
     for index, token in enumerate(tokens_a):
         tokens.append(token)
         segment_ids.append(0)
-        label_ids.append(label_map[list_label[index]])
+        label_ids.append(label_map[str(list_label[index])])
     tokens.append("[SEP]")
     segment_ids.append(0)
     label_ids.append(label_map["[SEP]"])
