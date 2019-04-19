@@ -10,8 +10,10 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from tqdm import tqdm
 from bert import tokenization
 from config import *
-
-def multiProcess(nthread = 8):
+'''
+直接对文本进行分割，500个词划分一次，并且没有加标题
+'''
+def multiProcessForTrain(nthread = 8):
     data = pd.read_json(TRAIN_EXTRACTS_SEG_json % "jieba")
     size = data.shape[0] // nthread
     seg_data = []
@@ -23,7 +25,7 @@ def multiProcess(nthread = 8):
 
     start = time.time()
     procs = ProcessPoolExecutor(nthread)
-    res = procs.map(dataProcessor, seg_data)
+    res = procs.map(trainDataProcessor, seg_data)
     procs.shutdown()
     end = time.time()
     print('runs %0.2f seconds.' % (end - start))
@@ -37,7 +39,7 @@ def multiProcess(nthread = 8):
     test_data[['newsId', 'label']].to_json('/mnt/souhu/code/ly/data_dir/dev.json', force_ascii=False)
     sub_train_data[['newsId', 'label']].to_json('/mnt/souhu/code/ly/data_dir/sub_train.json', force_ascii=False)
 
-def dataProcessor(subdata):
+def trainDataProcessor(subdata):
     tokenier = tokenization.FullTokenizer(vocab_file='data_dir/vocab.txt', do_lower_case=True)
     def getLabel(content, entities):
         content = content.replace('\ufeff', '')
@@ -112,5 +114,53 @@ def handleChar():
     data = data.replace('\ufeff', '').strip()
     print(data.split(" "))
 
+def multiProcessForTestData(nthread=8):
+    data = pd.read_json(TEST_DATA, orient='records', lines=True)
+    size = data.shape[0] // nthread
+    seg_data = []
+    for i in range(nthread - 1):
+        sub_data = data[i * size: (i + 1) * size]
+        seg_data.append(sub_data)
+    sub_data = data[(nthread - 1) * size:]
+    seg_data.append(sub_data)
+
+    start = time.time()
+    procs = ProcessPoolExecutor(nthread)
+    res = procs.map(testdataProcess, seg_data)
+    procs.shutdown()
+    end = time.time()
+    print('runs %0.2f seconds.' % (end - start))
+    data = pd.concat(res)
+    print(data.shape)
+
+    data[['newsId', 'label']].to_json('/mnt/souhu/code/ly/data_dir/test.json', force_ascii=False)
+
+def testdataProcess(sub_data):
+    tokenier = tokenization.FullTokenizer(vocab_file='data_dir/vocab.txt', do_lower_case=True)
+    def getLabel(content):
+        content = content.replace('\ufeff', '')
+        content = content.replace(' ', '')
+        content = content.replace('\n', '')
+        content = content.replace('\t', '')
+        content = content.replace('\u3000', '')
+        content = content.replace('\u200b', '').strip()
+        content_tokens = tokenier.tokenize(content)
+        content_len = len(content_tokens)
+        labels = [0 for i in range(content_len)]
+        line = []
+        index = 0
+        while index+500 <= content_len:
+            temp_content = content_tokens[index:index+500]
+            temp_label = labels[index:index+500]
+            line.append((temp_content, temp_label))
+            index += 500
+        if index < content_len:
+            temp_content = content_tokens[index:]
+            temp_label = labels[index:]
+            assert len(temp_label) == len(temp_content)
+            line.append((temp_content, temp_label))
+        return line
+    tqdm.pandas(desc="data Process:")
+    sub_data['label'] = sub_data['content'].progress_apply(getLabel)
 if __name__ == '__main__':
-    multiProcess()
+    multiProcessForTestData()

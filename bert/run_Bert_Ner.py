@@ -12,6 +12,7 @@ import collections
 import csv
 from tqdm import tqdm
 import os
+import tf_metrics
 import pandas as pd
 import modeling
 import optimization
@@ -73,9 +74,9 @@ flags.DEFINE_integer("eval_batch_size", 4, "Total batch size for eval.")
 
 flags.DEFINE_integer("predict_batch_size", 4, "Total batch size for predict.")
 
-flags.DEFINE_float("learning_rate", 5e-5, "The initial learning rate for Adam.")
+flags.DEFINE_float("learning_rate", 5e-6, "The initial learning rate for Adam.")
 
-flags.DEFINE_float("num_train_epochs", 3.0,
+flags.DEFINE_float("num_train_epochs", 5.0,
                    "Total number of training epochs to perform.")
 
 flags.DEFINE_float(
@@ -205,7 +206,7 @@ class NerProcessor(DataProcessor):
             self._read_json(os.path.join(data_dir, 'dev.json')), 'dev'
         )
 
-    def get_test_example(self, data_dir):
+    def get_test_examples(self, data_dir):
         return self._create_examples(
             self._read_json(os.path.join(data_dir, 'test.json')), 'test'
         )
@@ -457,10 +458,10 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
     with tf.variable_scope("loss"):
         if is_training:
             output_layer = tf.nn.dropout(output_layer, keep_prob=0.9)
-        output_layer_matrix = tf.reshape(output_layer, [-1, hidden_size])
-        logits = tf.matmul(output_layer_matrix, output_weight, transpose_b=True)
+        output_layer_matrix = tf.reshape(output_layer, [-1, hidden_size])               # [batch_size*seq_length, hidden_size]
+        logits = tf.matmul(output_layer_matrix, output_weight, transpose_b=True)        # [batch_size*seg_length, num_label]
         logits = tf.nn.bias_add(logits, output_bias)
-        logits = tf.reshape(logits, [-1, FLAGS.max_seq_length, num_labels])             # 最后一层输出
+        logits = tf.reshape(logits, [-1, FLAGS.max_seq_length, num_labels])             # 最后一层输出[batch_size, seq_length, num_label]
         # mask = tf.cast(input_mask,tf.float32)
         # loss = tf.contrib.seq2seq.sequence_loss(logits,labels,mask)
         # return (loss, logits, predict)
@@ -541,10 +542,16 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
             def metric_fn(per_example_loss, label_ids, logits, is_real_example):
                 predictions = tf.argmax(logits, axis=-1, output_type=tf.int32)
+                precision = tf_metrics.precision(label_ids, predictions, 4, [0, 1], average='macro')
+                recall = tf_metrics.recall(label_ids, predictions, 4, [0,1], average='macro')
+                f1 = tf_metrics.f1(label_ids, predictions, 4, [1,2], average='macro')
                 accuracy = tf.metrics.accuracy(
                     labels=label_ids, predictions=predictions, weights=is_real_example)
                 loss = tf.metrics.mean(values=per_example_loss, weights=is_real_example)
                 return {
+                    "eval_precision": precision,
+                    'eval_recall': recall,
+                    'eval_f1': f1,
                     "eval_accuracy": accuracy,
                     "eval_loss": loss,
                 }
@@ -624,20 +631,20 @@ def input_fn_builder(features, seq_length, is_training, drop_remainder):
 
 # This function is not used by this file but is still used by the Colab and
 # people who depend on it.
-def convert_examples_to_features(examples, label_list, max_seq_length,
-                                 tokenizer):
-    """Convert a set of `InputExample`s to a list of `InputFeatures`."""
-
-    features = []
-    for (ex_index, example) in enumerate(examples):
-        if ex_index % 10000 == 0:
-            tf.logging.info("Writing example %d of %d" % (ex_index, len(examples)))
-
-        feature = convert_single_example(ex_index, example, label_list,
-                                         max_seq_length, tokenizer)
-
-        features.append(feature)
-    return features
+# def convert_examples_to_features(examples, label_list, max_seq_length,
+#                                  tokenizer):
+#     """Convert a set of `InputExample`s to a list of `InputFeatures`."""
+#
+#     features = []
+#     for (ex_index, example) in enumerate(examples):
+#         if ex_index % 10000 == 0:
+#             tf.logging.info("Writing example %d of %d" % (ex_index, len(examples)))
+#
+#         feature = convert_single_example(ex_index, example, label_list,
+#                                          max_seq_length, tokenizer)
+#
+#         features.append(feature)
+#     return features
 
 
 def main(_):
@@ -647,7 +654,7 @@ def main(_):
         'ner': NerProcessor,
     }
 
-    tokenization.validate_case_matches_checkpoint(FLAGS.do_lower_case,
+    tokenization.validate_case_matches_checkpoint(FLAGS.do_lower_case,                      # 检测检查点路径是否符合要求
                                                   FLAGS.init_checkpoint)
 
     if not FLAGS.do_train and not FLAGS.do_eval and not FLAGS.do_predict:
@@ -696,7 +703,7 @@ def main(_):
     num_train_steps = None
     num_warmup_steps = None
     if FLAGS.do_train:
-        train_examples = processor.get_train_examples(FLAGS.data_dir)
+        train_examples = processor.get_train_examples(FLAGS.data_dir)                       # [InputExample] list类型
         num_train_steps = int(
             len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
         num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
@@ -723,13 +730,13 @@ def main(_):
 
     if FLAGS.do_train:
         train_file = os.path.join(FLAGS.output_dir, "train.tf_record")
-        file_based_convert_examples_to_features(
+        file_based_convert_examples_to_features(                                            # 将Examples写入文件
             train_examples, label_list, FLAGS.max_seq_length, tokenizer, train_file)
         tf.logging.info("***** Running training *****")
         tf.logging.info("  Num examples = %d", len(train_examples))
         tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
         tf.logging.info("  Num steps = %d", num_train_steps)
-        train_input_fn = file_based_input_fn_builder(
+        train_input_fn = file_based_input_fn_builder(                                       # 从文件中读取特征
             input_file=train_file,
             seq_length=FLAGS.max_seq_length,
             is_training=True,
