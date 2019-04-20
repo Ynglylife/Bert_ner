@@ -6,7 +6,6 @@
 
 import pkuseg
 import jieba
-import jieba.posseg as pseg
 from pyhanlp import *
 from config import *
 import os
@@ -40,23 +39,24 @@ class NLPUtil(object):
 
     @classmethod
     def divideWordWithJieba(cls, text):
-        cuted_text = pseg.lcut(text, HMM=True)
-        res = ""
-        for item, flag in cuted_text:
-            if item not in cls.stopwords:
-                res += item + ':' + flag + ' '
-        return res
+        cuted_text = jieba.lcut(text, HMM=True)
+        # res = ""
+        # for item, flag in cuted_text:
+        #     if item not in cls.stopwords:
+        #         res += item + ':' + flag + ' '
+        # return res
+        return cuted_text
 
     @classmethod
     def divideWordWithHanLP(cls, text):
         cuted_text = HanLP.segment(text)
         res = ""
         for item in cuted_text:
-            if item.word not in cls.stopwords:
+            if item.word not in cls.stopwords and item != '':
                 res += item.word + ':' + item.nature.name + ' '
         return res
 
 if __name__=="__main__":
     text = '与牛共舞大数据研究中心建议关注：中海达、振芯科技、合众思壮、海格通信、北斗星通等。'
-    res = NLPUtil.divideWordWithHanLP(text)
+    res = NLPUtil.divideWordWithJieba(text)
     print(res)

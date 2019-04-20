@@ -74,9 +74,9 @@ flags.DEFINE_integer("eval_batch_size", 4, "Total batch size for eval.")
 
 flags.DEFINE_integer("predict_batch_size", 4, "Total batch size for predict.")
 
-flags.DEFINE_float("learning_rate", 5e-6, "The initial learning rate for Adam.")
+flags.DEFINE_float("learning_rate", 5e-5, "The initial learning rate for Adam.")
 
-flags.DEFINE_float("num_train_epochs", 5.0,
+flags.DEFINE_float("num_train_epochs", 4.0,
                    "Total number of training epochs to perform.")
 
 flags.DEFINE_float(
@@ -197,38 +197,52 @@ class DataProcessor(object):
 class NerProcessor(DataProcessor):
     def get_train_examples(self, data_dir):
         return self._create_examples(
-            self._read_json(os.path.join(data_dir, 'train.json')), "train"
+            self._read_json(os.path.join(data_dir, 'train_title.json')), "train"
            #self._read_json("/mnt/souhu/data/coreEntityEmotion_sub_train_bert.json"), "sub_train"
         )
 
     def get_dev_examples(self, data_dir):
         return self._create_examples(
-            self._read_json(os.path.join(data_dir, 'dev.json')), 'dev'
+            self._read_json(os.path.join(data_dir, 'dev_title.json')), 'dev'
         )
 
     def get_test_examples(self, data_dir):
         return self._create_examples(
-            self._read_json(os.path.join(data_dir, 'test.json')), 'test'
+            self._read_json(os.path.join(data_dir, 'test_title.json')), 'test'
         )
 
     def get_labels(self):
-        return ['0', '1', "[CLS]", "[SEP]"]
+        return ['0', 'K-PRE', 'K-ORG', "[CLS]", "[SEP]"]
 
     def _create_examples(self, data, set_type):
         examples = []
-        def getExample(guid, label):
-            for i, sub_label in enumerate(label):
-                text = sub_label[0]
-                label = sub_label[1]
-                examples.append(InputExample(guid="%s-%d" % (guid, i), text_a=text, text_b=None, label=label))
-        data.progress_apply(lambda row: getExample(row['newsId'], row['label']), axis=1)
+        def getExamples(guid, example):
+            sequences_tokens = example[0]
+            title_tokens = example[1]
+            sequences_labels = example[2]
+            title_labels = example[3]
+            text_b = []
+            label_b = []
+            for i, word in enumerate(title_tokens):
+                text_b.extend(word)
+                label_b.extend(title_labels[i])
+
+            for i, seq_tokens in enumerate(sequences_tokens):
+                text_a = []
+                label_a = []
+                for j, word in enumerate(seq_tokens):
+                    assert len(word) == len(sequences_labels[i][j])
+                    text_a.extend(word)
+                    label_a.extend(sequences_labels[i][j])
+                examples.append(InputExample(guid="%s-%d" % (guid, i), text_a=text_a, text_b=text_b, label=[label_a, label_b]))
+        data.progress_apply(lambda row: getExamples(row['newsId'], row['example']), axis=1)
         return examples
 
 
 def convert_single_example(ex_index, example, label_list, max_seq_length,
                            tokenizer):
     """Converts a single `InputExample` into a single `InputFeatures`."""
-    list_label = example.label
+    label_a, label_b = example.label
     if isinstance(example, PaddingInputExample):
         return InputFeatures(
             input_ids=[0] * max_seq_length,
@@ -241,16 +255,15 @@ def convert_single_example(ex_index, example, label_list, max_seq_length,
     for (i, label) in enumerate(label_list):
         label_map[label] = i
     tokens_a = example.text_a
-    assert len(tokens_a) == len(list_label)
-    tokens_b = None
-    if example.text_b:
-        tokens_b = tokenizer.tokenize(example.text_b)
+    tokens_b = example.text_b
+    assert len(tokens_a) == len(label_a)
+    assert len(tokens_b) == len(label_b)
 
     if tokens_b:
         # Modifies `tokens_a` and `tokens_b` in place so that the total
         # length is less than the specified length.
         # Account for [CLS], [SEP], [SEP] with "- 3"
-        _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
+        _truncate_seq_pair(tokens_a, tokens_b, label_a, label_b, max_seq_length - 3,)
     else:
         # Account for [CLS] and [SEP] with "- 2"
         if len(tokens_a) > max_seq_length - 2:
@@ -283,17 +296,19 @@ def convert_single_example(ex_index, example, label_list, max_seq_length,
     for index, token in enumerate(tokens_a):
         tokens.append(token)
         segment_ids.append(0)
-        label_ids.append(label_map[str(list_label[index])])
+        label_ids.append(label_map[str(label_a[index])])
     tokens.append("[SEP]")
     segment_ids.append(0)
     label_ids.append(label_map["[SEP]"])
 
     if tokens_b:
-        for token in tokens_b:
+        for i, token in enumerate(tokens_b):
             tokens.append(token)
             segment_ids.append(1)
+            label_ids.append(label_map[str(label_b[i])])
         tokens.append("[SEP]")
         segment_ids.append(1)
+        label_ids.append(label_map['[SEP]'])
 
     input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
@@ -411,7 +426,7 @@ def file_based_input_fn_builder(input_file, seq_length, is_training,
     return input_fn
 
 
-def _truncate_seq_pair(tokens_a, tokens_b, max_length):
+def _truncate_seq_pair(tokens_a, tokens_b, label_a, label_b, max_length):
     """Truncates a sequence pair in place to the maximum length."""
 
     # This is a simple heuristic which will always truncate the longer sequence
@@ -424,8 +439,10 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
             break
         if len(tokens_a) > len(tokens_b):
             tokens_a.pop()
+            label_a.pop()
         else:
             tokens_b.pop()
+            label_b.pop()
 
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
@@ -542,9 +559,9 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
             def metric_fn(per_example_loss, label_ids, logits, is_real_example):
                 predictions = tf.argmax(logits, axis=-1, output_type=tf.int32)
-                precision = tf_metrics.precision(label_ids, predictions, 4, [0, 1], average='macro')
-                recall = tf_metrics.recall(label_ids, predictions, 4, [0,1], average='macro')
-                f1 = tf_metrics.f1(label_ids, predictions, 4, [1,2], average='macro')
+                precision = tf_metrics.precision(label_ids, predictions, 5, [1, 2], average='macro')
+                recall = tf_metrics.recall(label_ids, predictions, 5, [1,2], average='macro')
+                f1 = tf_metrics.f1(label_ids, predictions, 5, [1, 2], average='macro')
                 accuracy = tf.metrics.accuracy(
                     labels=label_ids, predictions=predictions, weights=is_real_example)
                 loss = tf.metrics.mean(values=per_example_loss, weights=is_real_example)
