@@ -11,8 +11,9 @@ from tqdm import tqdm
 from bert import tokenization
 from nlpUtil import NLPUtil
 from config import *
+
 '''
-直接对文本进行分割，500个词划分一次，并且没有加标题
+对文本按照句子划分，直接对句子使用结巴分词，对分词结果进行标注
 '''
 def multiProcessForTrain(nthread = 8):
     data = pd.read_json(TRAIN_EXTRACTS_SEG_json % "jieba")
@@ -164,7 +165,6 @@ def testdataProcess(sub_data):
     tqdm.pandas(desc="data Process:")
     sub_data['label'] = sub_data['content'].progress_apply(getLabel)
 
-
 '''
 对文本按照句子进行划分，同时加入标题
 '''
@@ -292,8 +292,81 @@ def multiProcessForTrainWithTitle(nthread = 8):
     test_data[['newsId', 'example']].to_json('/mnt/souhu/code/ly/data_dir/dev_title.json', force_ascii=False)
     sub_train_data[['newsId', 'example']].to_json('/mnt/souhu/code/ly/data_dir/sub_train_title.json', force_ascii=False)
 
+'''
+处理测试集数据
+'''
+def testDataProcessWithTitle(sub_data):
+    def getLabel(title, content):
+        content = contentHandle(content)                                # 去除特殊符号
+        title = contentHandle(title)                                    # 去除特殊符号
+        sequences = content.split('。')
+
+        sequences_tokens = []
+        sequences_labels = []
+        for seq in sequences:
+            if seq == '':
+                continue
+            seq_tokens = []
+            seq_seg = util.divideWordWithJieba(seq)
+            seq_labels = [['0'] for i in range(len(seq_seg))]                       # 每句话的label， 每个词是['0']
+            pop_list = []
+            for i, word in enumerate(seq_seg):
+                word_tokens = tokenier.tokenize(word)
+                if len(word_tokens) == 0:
+                    pop_list.append(i)
+                    continue
+                seq_tokens.append(word_tokens)
+                if len(word_tokens) == 1:
+                    continue
+                seq_labels[i].extend(['0'] * (len(word_tokens) - 1))
+            for i, index in enumerate(pop_list):
+                seq_labels.pop(index-i)
+            sequences_tokens.append(seq_tokens)
+            sequences_labels.append(seq_labels)
+        title_seg = util.divideWordWithJieba(title)
+        title_labels = [['0'] for i in range(len(title_seg))]
+        title_tokens = []
+        pop_list = []
+        for i, word in enumerate(title_seg):
+            word_tokens = tokenier.tokenize(word)
+            if len(word_tokens) == 0:
+                pop_list.append(i)
+                continue
+            title_tokens.append(word_tokens)
+            if len(word_tokens) == 1:
+                continue
+            title_labels[i].extend(['0'] * (len(word_tokens) - 1))
+        for i, index in enumerate(pop_list):
+            title_labels.pop(index-i)
+        example = [sequences_tokens, title_tokens, sequences_labels, title_labels]
+        return example
+
+    tqdm.pandas(desc="process with title: ")
+    sub_data['example'] = sub_data.progress_apply(lambda row: getLabel(row['title'], row['content']), axis=1)
+    return sub_data
+
+def multiProcessForTestWithTitle(nthread = 8):
+    data = pd.read_json(TEST_DATA, orient='records', lines=True)
+    size = data.shape[0] // nthread
+    seg_data = []
+    for i in range(nthread - 1):
+        sub_data = data[i * size: (i + 1) * size]
+        seg_data.append(sub_data)
+    sub_data = data[(nthread - 1) * size:]
+    seg_data.append(sub_data)
+
+    start = time.time()
+    procs = ProcessPoolExecutor(nthread)
+    res = procs.map(testDataProcessWithTitle, seg_data)
+    procs.shutdown()
+    end = time.time()
+    print('runs %0.2f seconds.' % (end - start))
+    data = pd.concat(res)
+    print(data.shape)
+    data[['newsId', 'example']].to_json('/mnt/souhu/code/ly/data_dir/test_title.json', force_ascii=False)
+
 if __name__ == '__main__':
-    multiProcessForTrainWithTitle()
+    multiProcessForTestWithTitle()
     # a = [[[['江', '宁', '区'], ['可', '以'], ['指'], ['：'], ['.'], ['江', '宁', '区'], ['('], ['南', '京', '市'], [')'], ['，'], ['江', '苏', '省'], ['南', '京', '市'], ['下', '辖'], ['的'], ['一', '個'], ['市', '轄', '區']], [['江', '宁', '区'], ['('], ['上', '海', '市'], [')'], ['，'], ['上', '海', '市'], ['已'], ['撤', '销'], ['的'], ['一', '個'], ['市', '轄', '區']]],
     #      [['江', '苏', '省'], ['南', '京', '市'], ['江', '宁', '区']],
     #      [[['K-PRE', 'K-ORG', 'K-ORG'], ['0', '0'], ['0'], ['0'], ['0'], ['K-PRE', 'K-ORG', 'K-ORG'], ['0'], ['0', '0', '0'], ['0'], ['0'], ['K-PRE', 'K-ORG', 'K-ORG'], ['0', '0', '0'], ['0', '0'], ['0'], ['0', '0'], ['0', '0', '0']], [['K-PRE', 'K-ORG', 'K-ORG'], ['0'], ['0', '0', '0'], ['0'], ['0'], ['0', '0', '0'], ['0'], ['0', '0'], ['0'], ['0', '0'], ['0', '0', '0']]],
