@@ -6,61 +6,11 @@
 
 import pandas as pd
 import time
-import json
-import os
-import numpy as np
 from tqdm import tqdm
-from sklearn.feature_extraction.text import TfidfTransformer
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from multiprocessing import Pool
 from multiprocessing import cpu_count
 from config import *
 from nlpUtil import NLPUtil
-
-def extractAll():
-    data = pd.read_json(TRAIN_DATA, orient='records', lines=True)
-    data['entity1'] = data['coreEntityEmotions'].apply(lambda x: x[0]['entity'].strip())
-    data['emotion1'] = data['coreEntityEmotions'].apply(lambda x: x[0]['emotion'].strip())
-
-    def getEntity2(x):
-        try:
-            return x[1]['entity'].strip()
-        except:
-            return np.NaN
-    data['entity2'] = data['coreEntityEmotions'].apply(getEntity2)
-
-    def getEmotion2(x):
-        try:
-            return x[1]['emotion'].strip()
-        except:
-            return np.NaN
-    data['emotion2'] = data['coreEntityEmotions'].apply(getEmotion2)
-
-    def getEntity3(x):
-        try:
-            return x[2]['entity'].strip()
-        except:
-            return np.NaN
-    data['entity3'] = data['coreEntityEmotions'].apply(getEntity3)
-
-    def getEmotion3(x):
-        try:
-            return x[2]['emotion'].strip()
-        except:
-            return np.NaN
-    data['emotion3'] = data['coreEntityEmotions'].apply(getEmotion3)
-    data.to_csv(TRAIN_EXTRACTS, sep='\t', index=False, encoding='utf-8')
-
-def getEntities():
-    if not os.path.exists(TRAIN_EXTRACTS):
-        extractAll()
-    data = pd.read_csv(TRAIN_EXTRACTS, sep='\t', encoding='utf-8')
-    dictionary = list(data['entity1']) + list(data['entity2']) + list(data['entity3'])
-    dictionary = list(set(dictionary))
-    dictionary.remove(np.nan)
-    with open(ENTITY_WORDS, 'w') as f:
-        for item in dictionary:
-            f.write(item + '\n')
 
 def segData(nthread=None):
     if nthread == None:
