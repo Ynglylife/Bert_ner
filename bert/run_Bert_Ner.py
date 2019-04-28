@@ -18,6 +18,7 @@ import modeling
 import optimization
 import tokenization
 import tensorflow as tf
+from tensorflow.contrib import rnn, crf
 
 flags = tf.flags
 
@@ -115,6 +116,14 @@ tf.flags.DEFINE_string("master", None, "[Optional] TensorFlow master URL.")
 flags.DEFINE_integer(
     "num_tpu_cores", 8,
     "Only used if `use_tpu` is True. Total number of TPU cores to use.")
+
+flags.DEFINE_integer(
+    "rnn_size", 32,
+    "if RNN is used, the number of hidden cells.")
+flags.DEFINE_integer(
+    'rnn_num_layer', 4,
+    'if RNN is used, the number of hidden layers'
+)
 
 
 class InputExample(object):
@@ -443,6 +452,20 @@ def _truncate_seq_pair(tokens_a, tokens_b, label_a, label_b, max_length):
             tokens_b.pop()
             label_b.pop()
 
+def makeCell(rnn_size):
+    cell = rnn.LSTMCell(rnn_size)
+    cell = rnn.DropoutWrapper(cell, output_keep_prob=0.9)
+    return cell
+
+def getRnnLayer(embedding, rnn_size, rnn_num_layer, actual_seq_length):
+    cell_fw_layers = [makeCell(rnn_size) for _ in range(rnn_num_layer)]
+    cell_bw_layers = [makeCell(rnn_size) for _ in range(rnn_num_layer)]
+    cell_fw = rnn.MultiRNNCell(cell_fw_layers, state_is_tuple=True)
+    cell_bw = rnn.MultiRNNCell(cell_bw_layers, state_is_tuple=True)
+    outputs, _ = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, embedding, sequence_length=actual_seq_length, dtype=tf.float32)
+    outputs = tf.concat(outputs, axis=2)
+    return outputs
+
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
                  labels, num_labels, use_one_hot_embeddings):
@@ -463,32 +486,63 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
     output_layer = model.get_sequence_output()                                      #Pooler前一层输出
     final_hidden_shape = modeling.get_shape_list(output_layer, expected_rank=3)
     hidden_size = final_hidden_shape[-1]
+    actual_seq_length = tf.reduce_sum(input_mask, axis=-1)
+    with tf.variable_scope('bilstm-crf'):
+        with tf.variable_scope('rnn'):
+            rnn_size = FLAGS.rnn_size
+            rnn_num_layer = FLAGS.rnn_num_layer
+            rnn_output = getRnnLayer(output_layer, rnn_size, rnn_num_layer, actual_seq_length)
+            rnn_W = tf.get_variable('W', shape=[rnn_size*2, rnn_size], dtype=tf.float32,
+                                    initializer=tf.truncated_normal_initializer(stddev=0.02))
+            rnn_b = tf.get_variable('b', shape=[rnn_size], dtype=tf.float32,
+                                    initializer=tf.zeros_initializer())
+            rnn_output = tf.reshape(rnn_output, shape=[-1, rnn_size*2])
+            rnn_output = tf.tanh(tf.nn.xw_plus_b(rnn_output, rnn_W, rnn_b))
+        with tf.variable_scope('logits'):
+            W = tf.get_variable("W", shape=[rnn_size, num_labels],
+                                dtype=tf.float32, initializer=tf.truncated_normal_initializer(stddev=0.02))
 
-    output_weight = tf.get_variable(
-        "output_weights", [num_labels, hidden_size],
-        initializer=tf.truncated_normal_initializer(stddev=0.02)
-    )
-    output_bias = tf.get_variable(
-        "output_bias", [num_labels], initializer=tf.zeros_initializer()
-    )
-    with tf.variable_scope("loss"):
-        if is_training:
-            output_layer = tf.nn.dropout(output_layer, keep_prob=0.9)
-        output_layer_matrix = tf.reshape(output_layer, [-1, hidden_size])               # [batch_size*seq_length, hidden_size]
-        logits = tf.matmul(output_layer_matrix, output_weight, transpose_b=True)        # [batch_size*seg_length, num_label]
-        logits = tf.nn.bias_add(logits, output_bias)
-        logits = tf.reshape(logits, [-1, FLAGS.max_seq_length, num_labels])             # 最后一层输出[batch_size, seq_length, num_label]
-        # mask = tf.cast(input_mask,tf.float32)
-        # loss = tf.contrib.seq2seq.sequence_loss(logits,labels,mask)
-        # return (loss, logits, predict)
-        ##########################################################################
-        log_probs = tf.nn.log_softmax(logits, axis=-1)                                  # 对输出的softmax归一化
-        one_hot_labels = tf.one_hot(labels, depth=num_labels, dtype=tf.float32)
-        per_example_loss = -tf.reduce_sum(one_hot_labels * log_probs, axis=-1)          # 每个样本的损失值
-        loss = tf.reduce_mean(per_example_loss)                                          # 总的损失值
-        predict = tf.argmax(log_probs, axis=-1)                                         # 预测值
-        return (loss, per_example_loss, logits, predict)
-        ##########################################################################
+            b = tf.get_variable("b", shape=[num_labels], dtype=tf.float32,
+                                initializer=tf.zeros_initializer())
+
+            logits = tf.nn.xw_plus_b(rnn_output, W, b)
+            logits = tf.reshape(logits, [-1, FLAGS.max_seq_length, num_labels])
+        with tf.variable_scope('crf_loss'):
+            trans_matrix = tf.get_variable('trains_matrix', shape=[num_labels, num_labels])
+            log_likelihood, trans_matrix = crf.crf_log_likelihood(inputs=logits,
+                                                                  tag_indices=labels,
+                                                                  transition_params=trans_matrix,
+                                                                  sequence_lengths=actual_seq_length)
+            per_example_loss = tf.reduce_sum(-log_likelihood, axis=-1)
+            loss = tf.reduce_mean(per_example_loss)
+            pred_labels, _ = crf.crf_decode(potentials=logits, transition_params=trans_matrix,
+                                            sequence_length=actual_seq_length)
+            return (loss, per_example_loss, logits, pred_labels)
+    # output_weight = tf.get_variable(
+    #     "output_weights", [num_labels, hidden_size],
+    #     initializer=tf.truncated_normal_initializer(stddev=0.02)
+    # )
+    # output_bias = tf.get_variable(
+    #     "output_bias", [num_labels], initializer=tf.zeros_initializer()
+    # )
+    # with tf.variable_scope("loss"):
+    #     if is_training:
+    #         output_layer = tf.nn.dropout(output_layer, keep_prob=0.9)
+    #     output_layer_matrix = tf.reshape(output_layer, [-1, hidden_size])               # [batch_size*seq_length, hidden_size]
+    #     logits = tf.matmul(output_layer_matrix, output_weight, transpose_b=True)        # [batch_size*seg_length, num_label]
+    #     logits = tf.nn.bias_add(logits, output_bias)
+    #     logits = tf.reshape(logits, [-1, FLAGS.max_seq_length, num_labels])             # 最后一层输出[batch_size, seq_length, num_label]
+    #     # mask = tf.cast(input_mask,tf.float32)
+    #     # loss = tf.contrib.seq2seq.sequence_loss(logits,labels,mask)
+    #     # return (loss, logits, predict)
+    #     ##########################################################################
+    #     log_probs = tf.nn.log_softmax(logits, axis=-1)                                  # 对输出的softmax归一化
+    #     one_hot_labels = tf.one_hot(labels, depth=num_labels, dtype=tf.float32)
+    #     per_example_loss = -tf.reduce_sum(one_hot_labels * log_probs, axis=-1)          # 每个样本的损失值
+    #     loss = tf.reduce_mean(per_example_loss)                                          # 总的损失值
+    #     predict = tf.argmax(log_probs, axis=-1)                                         # 预测值
+    #     return (loss, per_example_loss, logits, predict)
+    #     ##########################################################################
 
 
 def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,

@@ -12,8 +12,6 @@ def getFourIndex(arr):
     for i in range(len(arr)):
         if int(arr[i]) == 4:
             indexs.append(i)
-    if len(indexs) != 2:
-        print(arr)
     return indexs
 
 # 将分词结果转化为1维，直接拉成一维
@@ -70,7 +68,7 @@ def getResultForEntity():
                 if title_labels[i] == '1':
                     temp_str += title_tokens[i].replace('##', '')
                 elif title_labels[i] == '2':
-                    if len(temp_str) != 0:
+                    if temp_str != '':
                         temp_str += title_tokens[i].replace('##', '')
                 else:
                     if temp_str != '':
@@ -92,7 +90,7 @@ def getResultForEntity():
         now_index += seq_cnt
         return keywords
 
-    test_data['entity'] = test_data['example'].progress_apply(getLabel)
+    test_data['entity'] = test_data['entityExamples'].progress_apply(getLabel)
     test_data[['newsId', 'entity']].to_json("/mnt/souhu/code/ly/data_dir/entity_output.json",
                                             orient='records', lines=True, force_ascii=False)
 
